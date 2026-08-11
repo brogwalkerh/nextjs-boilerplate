@@ -87,6 +87,23 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
       <circle key="inner" r={item.w * 0.28} fill={cat.stroke} opacity={0.4} />
     );
   }
+  if (item.type === "pillar") {
+    decorations.push(
+      <line key="x1" x1={-item.w * 0.25} y1={-item.w * 0.25} x2={item.w * 0.25} y2={item.w * 0.25} stroke={cat.stroke} strokeWidth={0.08} />,
+      <line key="x2" x1={-item.w * 0.25} y1={item.w * 0.25} x2={item.w * 0.25} y2={-item.w * 0.25} stroke={cat.stroke} strokeWidth={0.08} />
+    );
+  }
+  if (item.type === "hallway") {
+    // Solid walls on the long sides only — the short ends stay open like a real corridor
+    decorations.push(
+      <line key="w1" x1={-item.w / 2} y1={-item.h / 2} x2={item.w / 2} y2={-item.h / 2} stroke="#57534e" strokeWidth={0.28} />,
+      <line key="w2" x1={-item.w / 2} y1={item.h / 2} x2={item.w / 2} y2={item.h / 2} stroke="#57534e" strokeWidth={0.28} />
+    );
+  }
+
+  // Free text labels rotate with the item (so text can run along a hallway);
+  // furniture labels stay upright regardless of the item's rotation.
+  const keepTextRotation = item.type === "label" || item.type === "hallway" || item.type === "area";
 
   return (
     <g>
@@ -97,6 +114,9 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
       ))}
       {item.type === "chair" ? (
         <ChairGlyph scale={1.15} />
+      ) : item.type === "label" ? (
+        // invisible hit target so the text can be clicked and dragged
+        <rect x={-item.w / 2} y={-item.h / 2} width={item.w} height={item.h} fill="transparent" stroke="none" />
       ) : isRound ? (
         <circle r={item.w / 2} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.12} />
       ) : (
@@ -107,14 +127,27 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
           height={item.h}
           rx={item.type === "chair-row" ? 0.3 : 0.15}
           fill={item.type === "chair-row" ? "none" : cat.fill}
-          stroke={cat.stroke}
+          fillOpacity={item.type === "area" ? 0.45 : undefined}
+          stroke={item.type === "hallway" ? "none" : cat.stroke}
           strokeWidth={0.12}
-          strokeDasharray={item.type === "chair-row" || item.type === "entrance" ? "0.4 0.3" : undefined}
+          strokeDasharray={item.type === "chair-row" || item.type === "entrance" || item.type === "area" ? "0.4 0.3" : undefined}
         />
       )}
       {decorations}
-      {showLabel && (
-        <g transform={`rotate(${-item.rotation})`}>
+      {item.type === "label" && (
+        <text
+          textAnchor="middle"
+          y={item.h * 0.22}
+          fontSize={clamp(item.h * 0.62, 0.8, 12)}
+          fontFamily="ui-sans-serif, system-ui, sans-serif"
+          fill="#44403c"
+          fontWeight={700}
+        >
+          {item.label || "Label"}
+        </text>
+      )}
+      {showLabel && item.type !== "label" && (
+        <g transform={`rotate(${keepTextRotation ? 0 : -item.rotation})`}>
           <text
             textAnchor="middle"
             y={item.seats > 0 && item.type !== "chair" && item.type !== "chair-row" ? -0.1 : labelSize * 0.35}
@@ -147,6 +180,15 @@ function PalettePreview({ type }: { type: string }) {
   const fake = { ...makeItem(type, 0, 0), id: "preview" };
   const hasChairs = cat.seats > 0 && cat.seatArrangement !== "none";
   const extent = Math.max(fake.w, fake.h) + (hasChairs ? 3.4 : 1);
+  if (type === "label") {
+    return (
+      <svg viewBox="-3 -3 6 6" width={44} height={44} aria-hidden>
+        <text textAnchor="middle" y={1.1} fontSize={3.4} fontFamily="ui-sans-serif, system-ui, sans-serif" fontWeight={700} fill="#78716c">
+          Aa
+        </text>
+      </svg>
+    );
+  }
   return (
     <svg viewBox={`${-extent / 2} ${-extent / 2} ${extent} ${extent}`} width={44} height={44} aria-hidden>
       <ItemGlyph item={fake} showText={false} />
@@ -410,7 +452,11 @@ export default function BanquetDesigner() {
     (type: string, x: number, y: number) => {
       const step = snapStep();
       const rm = roomRef.current;
-      const it = makeItem(type, clamp(snapTo(x, step), 0, rm.w), clamp(snapTo(y, step), 0, rm.h));
+      const it = makeItem(
+        type,
+        clamp(snapTo(x, step), -M + 1, rm.w + M - 1),
+        clamp(snapTo(y, step), -M + 1, rm.h + M - 1)
+      );
       commit([...itemsRef.current, it]);
       setSelected([it.id]);
     },
@@ -522,15 +568,43 @@ export default function BanquetDesigner() {
 
   /* ----- zoom ----- */
 
+  // Bounding box (in feet) around the room plus everything placed, including
+  // items sitting outside the room — used by Fit and PNG export.
+  const contentBBox = useCallback(() => {
+    const rm = roomRef.current;
+    let minX = 0;
+    let minY = 0;
+    let maxX = rm.w;
+    let maxY = rm.h + (rm.name ? 3.2 : 0); // leave space for the room name caption
+    for (const it of itemsRef.current) {
+      const r = Math.max(it.w, it.h) / 2 + 2.2;
+      minX = Math.min(minX, it.x - r);
+      minY = Math.min(minY, it.y - r);
+      maxX = Math.max(maxX, it.x + r);
+      maxY = Math.max(maxY, it.y + r);
+    }
+    minX = Math.max(minX - 1.5, -M);
+    minY = Math.max(minY - 1.5, -M);
+    maxX = Math.min(maxX + 1.5, rm.w + M);
+    maxY = Math.min(maxY + 1.5, rm.h + M);
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }, []);
+
   const fitZoom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const z = Math.min(
-      (el.clientWidth - 24) / ((roomRef.current.w + 2 * M) * PPF),
-      (el.clientHeight - 24) / ((roomRef.current.h + 2 * M) * PPF)
+    const bb = contentBBox();
+    const z = clamp(
+      Math.min((el.clientWidth - 24) / (bb.w * PPF), (el.clientHeight - 24) / (bb.h * PPF)),
+      0.2,
+      3
     );
-    setZoom(clamp(z, 0.2, 3));
-  }, []);
+    setZoom(z);
+    requestAnimationFrame(() => {
+      el.scrollLeft = (bb.x + M) * PPF * z - (el.clientWidth - bb.w * PPF * z) / 2;
+      el.scrollTop = (bb.y + M) * PPF * z - (el.clientHeight - bb.h * PPF * z) / 2;
+    });
+  }, [contentBBox]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -594,8 +668,10 @@ export default function BanquetDesigner() {
     const clone = svg.cloneNode(true) as SVGSVGElement;
     clone.querySelectorAll("[data-noexport]").forEach((n) => n.remove());
     const scale = 2;
-    const w = (roomRef.current.w + 2 * M) * PPF * scale;
-    const h = (roomRef.current.h + 2 * M) * PPF * scale;
+    const bb = contentBBox();
+    const w = Math.round(bb.w * PPF * scale);
+    const h = Math.round(bb.h * PPF * scale);
+    clone.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.w} ${bb.h}`);
     clone.setAttribute("width", String(w));
     clone.setAttribute("height", String(h));
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
@@ -621,7 +697,7 @@ export default function BanquetDesigner() {
       });
     };
     img.src = url;
-  }, []);
+  }, [contentBBox]);
 
   const clearAll = useCallback(() => {
     if (itemsRef.current.length > 0 && !confirm("Clear the entire layout?")) return;
@@ -648,6 +724,20 @@ export default function BanquetDesigner() {
   /* ----- grid lines ----- */
 
   const gridLines: React.ReactNode[] = [];
+  const outsideGrid: React.ReactNode[] = [];
+  if (showGrid) {
+    // faint 5 ft grid across the workspace outside the room
+    for (let x = Math.ceil(-M / 5) * 5; x <= room.w + M; x += 5) {
+      outsideGrid.push(
+        <line key={`ox${x}`} x1={x} y1={-M} x2={x} y2={room.h + M} stroke="#e2dccd" strokeWidth={0.05} />
+      );
+    }
+    for (let y = Math.ceil(-M / 5) * 5; y <= room.h + M; y += 5) {
+      outsideGrid.push(
+        <line key={`oy${y}`} x1={-M} y1={y} x2={room.w + M} y2={y} stroke="#e2dccd" strokeWidth={0.05} />
+      );
+    }
+  }
   if (showGrid) {
     for (let x = 0; x <= room.w; x++) {
       const major = x % 5 === 0;
@@ -824,6 +914,7 @@ export default function BanquetDesigner() {
           >
             {/* floor */}
             <rect x={-M} y={-M} width={room.w + 2 * M} height={room.h + 2 * M} fill="#efeadf" />
+            {outsideGrid}
             <rect x={0} y={0} width={room.w} height={room.h} fill="#f7f3e8" stroke="none" />
             {gridLines}
             <rect x={0} y={0} width={room.w} height={room.h} fill="none" stroke="#57534e" strokeWidth={0.25} />
@@ -854,6 +945,19 @@ export default function BanquetDesigner() {
                   style={{ cursor: "move" }}
                 >
                   <ItemGlyph item={it} />
+                  {it.type === "label" && !isSel && (
+                    <rect
+                      data-noexport
+                      x={-it.w / 2}
+                      y={-it.h / 2}
+                      width={it.w}
+                      height={it.h}
+                      fill="none"
+                      stroke="#c4bdad"
+                      strokeWidth={0.05}
+                      strokeDasharray="0.3 0.3"
+                    />
+                  )}
                   {isSel && (
                     <g data-noexport>
                       <rect

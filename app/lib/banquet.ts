@@ -2,7 +2,7 @@
 // All dimensions are in feet; the canvas renders at PPF pixels per foot.
 
 export const PPF = 10; // base pixels per foot at zoom = 1
-export const CANVAS_MARGIN = 4; // feet of padding drawn around the room
+export const CANVAS_MARGIN = 20; // feet of workspace around the room (hallways, storage, staging areas)
 
 export type SeatArrangement = "around" | "both" | "one" | "none";
 export type Shape = "round" | "rect";
@@ -10,7 +10,7 @@ export type Shape = "round" | "rect";
 export interface CatalogEntry {
   type: string;
   name: string;
-  category: "Tables" | "Seating" | "Staging" | "Fixtures";
+  category: "Tables" | "Seating" | "Staging" | "Fixtures" | "Structure";
   shape: Shape;
   w: number; // feet (diameter for round)
   h: number;
@@ -75,17 +75,23 @@ export const CATALOG: CatalogEntry[] = [
   // ---- Fixtures ----
   { type: "bar", name: "Bar", category: "Fixtures", shape: "rect", w: 8, h: 3, seats: 0, seatArrangement: "none", resizable: true, fill: "#aecfe0", stroke: "#4a7fa0" },
   { type: "buffet", name: "Buffet Line", category: "Fixtures", shape: "rect", w: 12, h: 2.5, seats: 0, seatArrangement: "none", resizable: true, fill: "#c9dcb3", stroke: "#6f8f4a" },
-  { type: "airwall", name: "Airwall", category: "Fixtures", shape: "rect", w: 12, h: 0.6, seats: 0, seatArrangement: "none", resizable: true, fill: "#9ca3af", stroke: "#4b5563" },
-  { type: "entrance", name: "Entrance", category: "Fixtures", shape: "rect", w: 6, h: 1, seats: 0, seatArrangement: "none", fill: "#fcd9a8", stroke: "#c08a2e" },
   { type: "plant", name: "Plant", category: "Fixtures", shape: "round", w: 2, h: 2, seats: 0, seatArrangement: "none", fill: "#b5d4a7", stroke: "#4f7d3a", hideLabel: true },
   { type: "gift-table", name: "Gift Table", category: "Fixtures", shape: "rect", w: 6, h: 2.5, seats: 0, seatArrangement: "none", ...linen },
+
+  // ---- Structure & annotation ----
+  { type: "hallway", name: "Hallway", category: "Structure", shape: "rect", w: 20, h: 6, seats: 0, seatArrangement: "none", resizable: true, fill: "#eceae2", stroke: "#78716c" },
+  { type: "area", name: "Area / Zone", category: "Structure", shape: "rect", w: 12, h: 10, seats: 0, seatArrangement: "none", resizable: true, fill: "#dbe7f5", stroke: "#6b8cae" },
+  { type: "label", name: "Text Label", category: "Structure", shape: "rect", w: 8, h: 2, seats: 0, seatArrangement: "none", resizable: true, fill: "none", stroke: "none" },
+  { type: "airwall", name: "Airwall", category: "Structure", shape: "rect", w: 12, h: 0.6, seats: 0, seatArrangement: "none", resizable: true, fill: "#9ca3af", stroke: "#4b5563" },
+  { type: "entrance", name: "Entrance", category: "Structure", shape: "rect", w: 6, h: 1, seats: 0, seatArrangement: "none", fill: "#fcd9a8", stroke: "#c08a2e" },
+  { type: "pillar", name: "Pillar", category: "Structure", shape: "round", w: 2.5, h: 2.5, seats: 0, seatArrangement: "none", fill: "#d6d3d1", stroke: "#57534e", hideLabel: true },
 ];
 
 export const CATALOG_BY_TYPE: Record<string, CatalogEntry> = Object.fromEntries(
   CATALOG.map((c) => [c.type, c])
 );
 
-export const CATEGORIES = ["Tables", "Seating", "Staging", "Fixtures"] as const;
+export const CATEGORIES = ["Tables", "Seating", "Staging", "Fixtures", "Structure"] as const;
 
 let idCounter = 0;
 export function nextId(): string {
@@ -185,5 +191,11 @@ export function sampleLayout(): LayoutDoc {
   add("entrance", 30, 39.5);
   add("plant", 2, 2);
   add("plant", 58, 2);
+  // Back-of-house and circulation outside the room itself
+  add("hallway", 30, -5, { w: 60, h: 6, label: "Pre-Function Hallway" });
+  add("hallway", 66, 20, { w: 40, h: 6, rotation: 90, label: "Service Corridor" });
+  add("area", -9, 10, { w: 14, h: 16, label: "Storage" });
+  add("label", -9, 22, { label: "Back of house" });
+  add("label", 30, -10.5, { w: 12, h: 2.5, label: "← To Lobby" });
   return { room, items };
 }
