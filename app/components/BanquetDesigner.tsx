@@ -797,13 +797,17 @@ export default function BanquetDesigner() {
 
   /* ----- import / export ----- */
 
-  const exportJSON = useCallback(() => {
+  // Save the active event as a portable .evlay file (JSON inside, so the
+  // format stays open and future-proof). Colleagues load it via Open.
+  const saveFile = useCallback(() => {
     const doc: LayoutDoc = { room: roomRef.current, items: itemsRef.current };
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${roomRef.current.name || "layout"}.json`;
+    a.download = `${roomRef.current.name.trim() || "event-layout"}.evlay`;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(a.href);
   }, []);
 
@@ -815,7 +819,7 @@ export default function BanquetDesigner() {
         try {
           const doc = JSON.parse(text) as LayoutDoc;
           if (!doc || !Array.isArray(doc.items) || !doc.room) throw new Error("bad file");
-          const name = String(doc.room.name ?? "").trim() || file.name.replace(/\.json$/i, "") || "Imported event";
+          const name = String(doc.room.name ?? "").trim() || file.name.replace(/\.(json|evlay)$/i, "") || "Imported event";
           addLayoutEntry({
             id: nextId(),
             name,
@@ -831,42 +835,102 @@ export default function BanquetDesigner() {
     [addLayoutEntry]
   );
 
-  const exportPNG = useCallback(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-    clone.querySelectorAll("[data-noexport]").forEach((n) => n.remove());
-    const scale = 2;
-    const bb = contentBBox();
-    const w = Math.round(bb.w * PPF * scale);
-    const h = Math.round(bb.h * PPF * scale);
-    clone.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.w} ${bb.h}`);
-    clone.setAttribute("width", String(w));
-    clone.setAttribute("height", String(h));
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d")!;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      canvas.toBlob((png) => {
-        if (!png) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(png);
-        a.download = `${roomRef.current.name || "layout"}.png`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-      });
-    };
-    img.src = url;
-  }, [contentBBox]);
+  // Render the floor plan (cropped to content) onto an offscreen canvas.
+  const renderToCanvas = useCallback(
+    (scale = 2) =>
+      new Promise<HTMLCanvasElement>((resolve, reject) => {
+        const svg = svgRef.current;
+        if (!svg) return reject(new Error("canvas not ready"));
+        const clone = svg.cloneNode(true) as SVGSVGElement;
+        clone.querySelectorAll("[data-noexport]").forEach((n) => n.remove());
+        const bb = contentBBox();
+        const w = Math.round(bb.w * PPF * scale);
+        const h = Math.round(bb.h * PPF * scale);
+        clone.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.w} ${bb.h}`);
+        clone.setAttribute("width", String(w));
+        clone.setAttribute("height", String(h));
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d")!;
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          resolve(canvas);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("could not render floor plan"));
+        };
+        img.src = url;
+      }),
+    [contentBBox]
+  );
+
+  const exportPNG = useCallback(async () => {
+    const canvas = await renderToCanvas(2);
+    canvas.toBlob((png) => {
+      if (!png) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(png);
+      a.download = `${roomRef.current.name.trim() || "layout"}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    });
+  }, [renderToCanvas]);
+
+  // A printable setup sheet: title, stats line, and the floor plan fitted to
+  // a US Letter page (landscape or portrait, whichever suits the plan).
+  const exportPDF = useCallback(async () => {
+    const canvas = await renderToCanvas(2);
+    const { jsPDF } = await import("jspdf");
+    const rm = roomRef.current;
+    const name = rm.name.trim() || "Event layout";
+    const seatCount = totalSeats(itemsRef.current);
+    const orientation = canvas.width >= canvas.height ? "landscape" : "portrait";
+    const pdf = new jsPDF({ orientation, unit: "pt", format: "letter" });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const margin = 40;
+    const headerH = 46;
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(18);
+    pdf.setTextColor(40);
+    pdf.text(name, margin, margin + 4);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    pdf.setTextColor(120);
+    // Standard PDF fonts use WinAnsi encoding, so keep this line ASCII-only.
+    pdf.text(
+      `${rm.w} ft x ${rm.h} ft  |  ${(rm.w * rm.h).toLocaleString("en-US")} sq ft  |  ${seatCount} seats  |  ${new Date().toLocaleDateString("en-US")}`,
+      margin,
+      margin + 22
+    );
+
+    const availW = pageW - margin * 2;
+    const availH = pageH - margin * 2 - headerH;
+    const s = Math.min(availW / canvas.width, availH / canvas.height);
+    const iw = canvas.width * s;
+    const ih = canvas.height * s;
+    pdf.addImage(
+      canvas.toDataURL("image/jpeg", 0.92),
+      "JPEG",
+      margin + (availW - iw) / 2,
+      margin + headerH + (availH - ih) / 2,
+      iw,
+      ih
+    );
+    pdf.save(`${name}.pdf`);
+  }, [renderToCanvas]);
 
   const clearAll = useCallback(() => {
     if (itemsRef.current.length > 0 && !confirm("Clear the entire layout?")) return;
@@ -1032,19 +1096,22 @@ export default function BanquetDesigner() {
           <button className={btn} onClick={clearAll}>
             Clear
           </button>
-          <button className={btn} onClick={() => fileRef.current?.click()}>
-            Import
+          <button className={btn} onClick={() => fileRef.current?.click()} title="Open an .evlay file as a new event">
+            Open
           </button>
-          <button className={btn} onClick={exportJSON}>
-            Export JSON
+          <button className={btn} onClick={saveFile} title="Save this event as an .evlay file on your computer">
+            Save
           </button>
-          <button className={btn} onClick={exportPNG}>
-            Export PNG
+          <button className={btn} onClick={exportPNG} title="Export the floor plan as a PNG image">
+            PNG
+          </button>
+          <button className={btn} onClick={exportPDF} title="Export a printable PDF setup sheet">
+            PDF
           </button>
           <input
             ref={fileRef}
             type="file"
-            accept="application/json,.json"
+            accept=".evlay,.json,application/json"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
