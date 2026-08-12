@@ -18,6 +18,7 @@ import {
   snapTo,
   totalSeats,
 } from "../lib/banquet";
+import { addLiveComment, createLive, deleteLiveComment, getLive, liveAvailable, LiveInfo, pushLive } from "../lib/live";
 import { decodeShare, encodeShare } from "../lib/share";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -32,6 +33,7 @@ interface SavedLayout {
   room: Room;
   items: PlacedItem[];
   comments?: LayoutComment[];
+  live?: LiveInfo; // set once the event has live share links
   updatedAt: number;
 }
 
@@ -219,7 +221,7 @@ function PalettePreview({ type }: { type: string }) {
 
 type Marquee = { x0: number; y0: number; x1: number; y1: number; additive: boolean };
 type Ghost = { type: string; x: number; y: number };
-type ViewerMode = { mode: "client" | "team" };
+type ViewerMode = { mode: "client" | "team"; liveId?: string };
 
 export default function BanquetDesigner() {
   const [room, setRoom] = useState<Room>({ name: "Grand Ballroom", w: 60, h: 40 });
@@ -241,6 +243,16 @@ export default function BanquetDesigner() {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState<{ client: string; team: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [liveAvail, setLiveAvail] = useState(false);
+  const [activeLive, setActiveLive] = useState<LiveInfo | null>(null);
+  const activeLiveRef = useRef(activeLive);
+  const liveUpdatedRef = useRef(0);
+  useEffect(() => {
+    activeLiveRef.current = activeLive;
+  }, [activeLive]);
+  useEffect(() => {
+    liveAvailable().then(setLiveAvail);
+  }, []);
   const portfolioRef = useRef<Portfolio | null>(null);
   const viewerRef = useRef<ViewerMode | null>(null);
   const commentsRef = useRef(comments);
@@ -378,19 +390,41 @@ export default function BanquetDesigner() {
       setRoom(active.room);
       setItemsRaw(active.items.filter((it) => CATALOG_BY_TYPE[it.type]));
       setComments(active.comments ?? []);
+      setActiveLive(active.live ?? null);
       setLoaded(true);
     };
 
     // Opening a share link while the app is already loaded only changes the
     // hash (no reload), so force one to enter viewer mode.
     const onHash = () => {
-      if (window.location.hash.startsWith("#share=")) window.location.reload();
+      if (window.location.hash.startsWith("#share=") || window.location.hash.startsWith("#live=")) window.location.reload();
     };
     window.addEventListener("hashchange", onHash);
 
-    // A #share= hash means this page was opened from a share link: show the
-    // shared snapshot in viewer mode instead of the user's own portfolio.
     const hash = window.location.hash;
+    // A #live= hash points at a live shared event on the server: fetch the
+    // current version and keep polling for updates.
+    if (hash.startsWith("#live=")) {
+      const [liveId, liveMode] = hash.slice(6).split(".");
+      getLive(liveId).then((rec) => {
+        if (!rec) {
+          alert("This live link isn't available (the event may have expired) — opening your own layouts instead.");
+          openActive();
+          return;
+        }
+        const mode: ViewerMode = { mode: liveMode === "client" ? "client" : "team", liveId };
+        viewerRef.current = mode;
+        setViewer(mode);
+        liveUpdatedRef.current = rec.updatedAt;
+        setRoom(rec.room);
+        setItemsRaw(rec.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+        setComments(rec.comments ?? []);
+        setLoaded(true);
+      });
+      return () => window.removeEventListener("hashchange", onHash);
+    }
+    // A #share= hash means this page was opened from a snapshot share link:
+    // show the shared snapshot in viewer mode instead of the user's own portfolio.
     if (hash.startsWith("#share=")) {
       decodeShare(hash.slice(7)).then((payload) => {
         if (!payload) {
@@ -571,6 +605,20 @@ export default function BanquetDesigner() {
     }
     const text = (window.prompt("Your comment for this spot:") || "").trim();
     if (!text) return;
+    const liveId = viewerRef.current?.liveId;
+    if (liveId) {
+      addLiveComment(liveId, { author, text, x, y }).then((c) => {
+        if (c) {
+          setComments((cs) => [...cs, c]);
+          setNotice("Comment sent to the planner");
+          if (noticeTimer.current) clearTimeout(noticeTimer.current);
+          noticeTimer.current = setTimeout(() => setNotice(null), 2500);
+        } else {
+          alert("Could not send the comment — please try again.");
+        }
+      });
+      return;
+    }
     setComments((c) => [...c, { id: nextId(), x, y, author, text, createdAt: Date.now() }]);
   }, []);
 
@@ -818,6 +866,7 @@ export default function BanquetDesigner() {
       setRoom(entry.room);
       setItemsRaw(entry.items.filter((it) => CATALOG_BY_TYPE[it.type]));
       setComments(entry.comments ?? []);
+      setActiveLive(entry.live ?? null);
       setSelected([]);
       setPast([]);
       setFuture([]);
@@ -887,6 +936,7 @@ export default function BanquetDesigner() {
     setRoom(next.room);
     setItemsRaw(next.items.filter((it) => CATALOG_BY_TYPE[it.type]));
     setComments(next.comments ?? []);
+    setActiveLive(next.live ?? null);
     setSelected([]);
     setPast([]);
     setFuture([]);
@@ -1073,20 +1123,17 @@ export default function BanquetDesigner() {
     };
   }, [shareOpen]);
 
-  const mailtoShare = useCallback(
-    (mode: "client" | "team") => {
-      if (!shareLinks) return;
-      const name = roomRef.current.name.trim() || "Event layout";
-      const link = mode === "client" ? shareLinks.client : shareLinks.team;
-      const subject = mode === "client" ? `Floor plan: ${name}` : `Please review: ${name}`;
-      const body =
-        mode === "client"
-          ? `Hi,\n\nHere is the floor plan for ${name}:\n\n${link}\n`
+  const emailLink = useCallback((mode: "client" | "team", link: string, live: boolean) => {
+    const name = roomRef.current.name.trim() || "Event layout";
+    const subject = mode === "client" ? `Floor plan: ${name}` : `Please review: ${name}`;
+    const body =
+      mode === "client"
+        ? `Hi,\n\nHere is the floor plan for ${name}:\n\n${link}\n`
+        : live
+          ? `Hi team,\n\nPlease review the layout for ${name}:\n\n${link}\n\nUse "Add comment" to drop pins on the plan — your comments reach me automatically.\n`
           : `Hi team,\n\nPlease review the layout for ${name}:\n\n${link}\n\nUse "Add comment" to drop pins on the plan, then "Email feedback" or "Copy feedback link" to send your notes back to me.\n`;
-      window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    },
-    [shareLinks]
-  );
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }, []);
 
   // Feedback link = the same team link, but regenerated so it includes the
   // reviewer's freshly added comment pins.
@@ -1107,6 +1154,80 @@ export default function BanquetDesigner() {
     )}`;
   }, [makeFeedbackLink]);
 
+  /* ----- live sharing ----- */
+
+  const createLiveLink = useCallback(async () => {
+    const pf = portfolioRef.current;
+    const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
+    if (!pf || !entry) return;
+    try {
+      const info = await createLive({ room: roomRef.current, items: itemsRef.current, comments: commentsRef.current });
+      entry.live = info;
+      persistPortfolio();
+      setActiveLive(info);
+      showNotice("Live links created — your edits now sync automatically");
+    } catch {
+      showNotice("Could not create live links — the server may not be set up yet");
+    }
+  }, [persistPortfolio, showNotice]);
+
+  // Planner side: push layout edits to the live event, debounced.
+  useEffect(() => {
+    if (!loaded || viewer || !activeLive) return;
+    const t = setTimeout(() => {
+      pushLive(activeLive.id, activeLive.key, { room: roomRef.current, items: itemsRef.current }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [room, items, loaded, viewer, activeLive]);
+
+  // Planner side: pull the team's comments into the editor sidebar.
+  useEffect(() => {
+    if (!loaded || viewer || !activeLive) return;
+    const iv = setInterval(async () => {
+      try {
+        const rec = await getLive(activeLive.id);
+        if (rec) setComments(rec.comments ?? []);
+      } catch {
+        // transient network problem — next tick retries
+      }
+    }, 12000);
+    return () => clearInterval(iv);
+  }, [loaded, viewer, activeLive]);
+
+  // Viewer side: poll the live event so the plan and comments stay current.
+  useEffect(() => {
+    if (!viewer?.liveId) return;
+    const id = viewer.liveId;
+    const iv = setInterval(async () => {
+      try {
+        const rec = await getLive(id);
+        if (!rec) return;
+        setComments(rec.comments ?? []);
+        if (rec.updatedAt !== liveUpdatedRef.current) {
+          liveUpdatedRef.current = rec.updatedAt;
+          setRoom(rec.room);
+          setItemsRaw(rec.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+        }
+      } catch {
+        // transient network problem — next tick retries
+      }
+    }, 8000);
+    return () => clearInterval(iv);
+  }, [viewer]);
+
+  // Comment removal works on local state and, for live events, on the server.
+  const removeComment = useCallback((cid: string) => {
+    setComments((cs) => cs.filter((x) => x.id !== cid));
+    const liveId = viewerRef.current?.liveId ?? activeLiveRef.current?.id;
+    if (liveId) deleteLiveComment(liveId, cid).catch(() => {});
+  }, []);
+
+  const clearComments = useCallback(() => {
+    setComments([]);
+    const lv = activeLiveRef.current;
+    if (lv) pushLive(lv.id, lv.key, { room: roomRef.current, items: itemsRef.current }, []).catch(() => {});
+  }, []);
+
   // From a shared link: keep a copy (including comment pins) in your own
   // portfolio and switch back to the normal editor.
   const saveSharedCopy = useCallback(() => {
@@ -1125,6 +1246,7 @@ export default function BanquetDesigner() {
     viewerRef.current = null;
     setViewer(null);
     setAddingComment(false);
+    setActiveLive(null);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
     setActiveId(entry.id);
     setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
@@ -1148,6 +1270,14 @@ export default function BanquetDesigner() {
   }, [commit]);
 
   /* ----- derived ----- */
+
+  const liveLinks =
+    activeLive && typeof window !== "undefined"
+      ? {
+          client: `${window.location.origin}${window.location.pathname}#live=${activeLive.id}.client`,
+          team: `${window.location.origin}${window.location.pathname}#live=${activeLive.id}.team`,
+        }
+      : null;
 
   const selectedItems = items.filter((it) => selected.includes(it.id));
   const single = selectedItems.length === 1 ? selectedItems[0] : null;
@@ -1200,7 +1330,13 @@ export default function BanquetDesigner() {
           <>
             <span className="text-base font-bold tracking-tight">Salon Planner</span>
             <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              {viewer.mode === "team" ? "shared for team review" : "shared floor plan"}
+              {viewer.liveId
+                ? viewer.mode === "team"
+                  ? "live team review — comments reach the planner automatically"
+                  : "live floor plan — always the latest version"
+                : viewer.mode === "team"
+                  ? "shared for team review"
+                  : "shared floor plan"}
             </span>
             <span className="mx-1 truncate text-sm font-semibold">{room.name}</span>
             <div className="mx-1 h-6 w-px bg-zinc-300 dark:bg-zinc-600" />
@@ -1224,12 +1360,16 @@ export default function BanquetDesigner() {
                   >
                     {addingComment ? "Click the plan to comment…" : "💬 Add comment"}
                   </button>
-                  <button className={btn} onClick={copyFeedbackLink} title="Copy a link containing your comment pins">
-                    Copy feedback link
-                  </button>
-                  <button className={btn} onClick={emailFeedback} title="Email your comment pins back to the planner">
-                    Email feedback
-                  </button>
+                  {!viewer.liveId && (
+                    <>
+                      <button className={btn} onClick={copyFeedbackLink} title="Copy a link containing your comment pins">
+                        Copy feedback link
+                      </button>
+                      <button className={btn} onClick={emailFeedback} title="Email your comment pins back to the planner">
+                        Email feedback
+                      </button>
+                    </>
+                  )}
                 </>
               )}
               <button className={btn} onClick={exportPDF}>
@@ -1571,8 +1711,9 @@ export default function BanquetDesigner() {
             <aside className="w-56 shrink-0 overflow-y-auto border-l border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-800">
               <p className="mb-1 text-sm font-semibold">Comments ({comments.length})</p>
               <p className="mb-3 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Click “Add comment”, then click a spot on the plan. When you&apos;re done, use “Copy feedback link” or
-                “Email feedback” to send your pins back to the planner.
+                {viewer.liveId
+                  ? "Click “Add comment”, then click a spot on the plan. Your pins reach the planner automatically."
+                  : "Click “Add comment”, then click a spot on the plan. When you're done, use “Copy feedback link” or “Email feedback” to send your pins back to the planner."}
               </p>
               <ol className="space-y-2">
                 {comments.map((c, i) => (
@@ -1583,7 +1724,7 @@ export default function BanquetDesigner() {
                       </span>
                       <button
                         className="text-red-600 hover:underline dark:text-red-400"
-                        onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}
+                        onClick={() => removeComment(c.id)}
                         title="Remove this comment"
                       >
                         ✕
@@ -1615,7 +1756,7 @@ export default function BanquetDesigner() {
                 <div className="mt-3 border-t border-zinc-200 pt-2 dark:border-zinc-600">
                   <div className="mb-1 flex items-center justify-between">
                     <p className="font-semibold text-zinc-700 dark:text-zinc-200">Team feedback ({comments.length})</p>
-                    <button className="text-red-600 hover:underline dark:text-red-400" onClick={() => setComments([])}>
+                    <button className="text-red-600 hover:underline dark:text-red-400" onClick={clearComments}>
                       Clear all
                     </button>
                   </div>
@@ -1628,7 +1769,7 @@ export default function BanquetDesigner() {
                           </span>
                           <button
                             className="text-red-600 hover:underline dark:text-red-400"
-                            onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}
+                            onClick={() => removeComment(c.id)}
                             title="Resolve / remove"
                           >
                             ✕
@@ -1778,9 +1919,54 @@ export default function BanquetDesigner() {
             aria-label="Share this event"
           >
             <h2 className="mb-1 text-base font-bold">Share “{room.name.trim() || "Untitled event"}”</h2>
+
+            {liveAvail && (
+              <div className="mb-4 rounded-md border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                <p className="mb-1 text-sm font-semibold">Live links — always show the latest version</p>
+                {activeLive && liveLinks ? (
+                  <>
+                    <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      Your edits sync automatically, and team comments appear in your sidebar within seconds — no links
+                      to send back. Live links stay active for 90 days after the last change.
+                    </p>
+                    <p className="mb-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">Client (view only)</p>
+                    <div className="mb-2 flex gap-2">
+                      <input readOnly className={`${input} min-w-0 flex-1`} value={liveLinks.client} onFocus={(e) => e.target.select()} aria-label="Live client link" />
+                      <button className={btn} onClick={() => copyText(liveLinks.client, "Live client link copied")}>
+                        Copy
+                      </button>
+                      <button className={btn} onClick={() => emailLink("client", liveLinks.client, true)}>
+                        Email…
+                      </button>
+                    </div>
+                    <p className="mb-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">Team (view &amp; comment)</p>
+                    <div className="flex gap-2">
+                      <input readOnly className={`${input} min-w-0 flex-1`} value={liveLinks.team} onFocus={(e) => e.target.select()} aria-label="Live team link" />
+                      <button className={btn} onClick={() => copyText(liveLinks.team, "Live team link copied")}>
+                        Copy
+                      </button>
+                      <button className={btn} onClick={() => emailLink("team", liveLinks.team, true)}>
+                        Email…
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      One link per audience that always shows the current layout. Your edits sync automatically, and the
+                      team&apos;s comment pins come straight back to your sidebar.
+                    </p>
+                    <button className={btn} onClick={createLiveLink}>
+                      Create live links
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
             <p className="mb-4 text-xs text-zinc-500 dark:text-zinc-400">
-              Links carry a snapshot of this layout — changes you make later aren&apos;t reflected in links you already
-              sent. Nothing is uploaded anywhere: the whole floor plan travels inside the link itself.
+              {liveAvail ? "Snapshot links below work everywhere, but freeze the layout as it is right now:" : "Links carry a snapshot of this layout — changes you make later aren't reflected in links you already sent."}{" "}
+              Nothing is uploaded for snapshot links: the whole floor plan travels inside the link itself.
             </p>
 
             <div className="mb-4">
@@ -1800,7 +1986,7 @@ export default function BanquetDesigner() {
                 <button className={btn} disabled={!shareLinks} onClick={() => copyText(shareLinks!.client, "Client link copied")}>
                   Copy
                 </button>
-                <button className={btn} disabled={!shareLinks} onClick={() => mailtoShare("client")}>
+                <button className={btn} disabled={!shareLinks} onClick={() => emailLink("client", shareLinks!.client, false)}>
                   Email…
                 </button>
               </div>
@@ -1823,7 +2009,7 @@ export default function BanquetDesigner() {
                 <button className={btn} disabled={!shareLinks} onClick={() => copyText(shareLinks!.team, "Team link copied")}>
                   Copy
                 </button>
-                <button className={btn} disabled={!shareLinks} onClick={() => mailtoShare("team")}>
+                <button className={btn} disabled={!shareLinks} onClick={() => emailLink("team", shareLinks!.team, false)}>
                   Email…
                 </button>
               </div>
