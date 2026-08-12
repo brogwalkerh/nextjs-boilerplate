@@ -26,6 +26,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Static Pages hosting can't run server code; the app detects the
+      # missing API at runtime and falls back to snapshot share links.
+      - run: rm -rf app/api
       - run: npm run build
         env:
           DEPLOY_TARGET: gh-pages
