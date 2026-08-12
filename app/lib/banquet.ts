@@ -40,9 +40,19 @@ export interface Room {
   h: number;
 }
 
+export interface LayoutComment {
+  id: string;
+  x: number; // feet, same coordinate space as items
+  y: number;
+  author: string;
+  text: string;
+  createdAt: number;
+}
+
 export interface LayoutDoc {
   room: Room;
   items: PlacedItem[];
+  comments?: LayoutComment[];
 }
 
 const wood = { fill: "#e8cfa3", stroke: "#a07d45" };
