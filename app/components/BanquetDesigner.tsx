@@ -9,6 +9,7 @@ import {
   displayName,
   LayoutDoc,
   makeItem,
+  nextId,
   PlacedItem,
   PPF,
   Room,
@@ -18,8 +19,22 @@ import {
 } from "../lib/banquet";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const STORAGE_KEY = "banquet-layout-v1";
+const PORTFOLIO_KEY = "banquet-portfolio-v1";
+const LEGACY_KEY = "banquet-layout-v1"; // pre-portfolio single-layout storage
 const M = CANVAS_MARGIN;
+
+interface SavedLayout {
+  id: string;
+  name: string;
+  room: Room;
+  items: PlacedItem[];
+  updatedAt: number;
+}
+
+interface Portfolio {
+  layouts: SavedLayout[];
+  activeId: string;
+}
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -213,6 +228,13 @@ export default function BanquetDesigner() {
   const [marquee, setMarquee] = useState<Marquee | null>(null);
   const [ghost, setGhost] = useState<Ghost | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [layoutList, setLayoutList] = useState<{ id: string; name: string }[]>([]);
+  const [activeId, setActiveId] = useState("");
+  const portfolioRef = useRef<Portfolio | null>(null);
+  const activeIdRef = useRef(activeId);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -260,40 +282,92 @@ export default function BanquetDesigner() {
     });
   }, []);
 
-  /* ----- persistence ----- */
+  /* ----- persistence: a portfolio of saved layouts, one per event ----- */
+
+  const persistPortfolio = useCallback(() => {
+    const pf = portfolioRef.current;
+    if (!pf) return;
+    try {
+      localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(pf));
+    } catch {
+      // storage full / unavailable — ignore
+    }
+  }, []);
+
+  // Write the editor's current room + items into the active portfolio entry.
+  const flushSave = useCallback(() => {
+    const pf = portfolioRef.current;
+    const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
+    if (!pf || !entry) return;
+    entry.room = roomRef.current;
+    entry.items = itemsRef.current;
+    entry.name = roomRef.current.name.trim() || "Untitled event";
+    entry.updatedAt = Date.now();
+    persistPortfolio();
+  }, [persistPortfolio]);
 
   useEffect(() => {
+    let pf: Portfolio | null = null;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(PORTFOLIO_KEY);
       if (raw) {
-        const doc = JSON.parse(raw) as LayoutDoc;
-        if (doc && Array.isArray(doc.items) && doc.room) {
-          setRoom(doc.room);
-          setItemsRaw(doc.items.filter((it) => CATALOG_BY_TYPE[it.type]));
-          setLoaded(true);
-          return;
-        }
+        const parsed = JSON.parse(raw) as Portfolio;
+        if (parsed && Array.isArray(parsed.layouts) && parsed.layouts.length > 0) pf = parsed;
       }
     } catch {
-      // fall through to sample
+      // corrupted — rebuild below
     }
-    const sample = sampleLayout();
-    setRoom(sample.room);
-    setItemsRaw(sample.items);
+    if (!pf) {
+      // Migrate the pre-portfolio single layout if one exists, else start with the sample.
+      let first: SavedLayout | null = null;
+      try {
+        const legacy = localStorage.getItem(LEGACY_KEY);
+        if (legacy) {
+          const doc = JSON.parse(legacy) as LayoutDoc;
+          if (doc && doc.room && Array.isArray(doc.items)) {
+            first = {
+              id: nextId(),
+              name: doc.room.name?.trim() || "My event",
+              room: doc.room,
+              items: doc.items,
+              updatedAt: Date.now(),
+            };
+          }
+        }
+      } catch {
+        // ignore broken legacy data
+      }
+      if (!first) {
+        const s = sampleLayout();
+        first = { id: nextId(), name: s.room.name, room: s.room, items: s.items, updatedAt: Date.now() };
+      }
+      pf = { layouts: [first], activeId: first.id };
+    }
+    const active = pf.layouts.find((l) => l.id === pf.activeId) ?? pf.layouts[0];
+    pf.activeId = active.id;
+    portfolioRef.current = pf;
+    setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+    setActiveId(active.id);
+    setRoom(active.room);
+    setItemsRaw(active.items.filter((it) => CATALOG_BY_TYPE[it.type]));
     setLoaded(true);
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
     const t = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ room, items }));
-      } catch {
-        // storage full / unavailable — ignore
-      }
+      const pf = portfolioRef.current;
+      const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
+      if (!pf || !entry) return;
+      entry.room = room;
+      entry.items = items;
+      entry.name = room.name.trim() || "Untitled event";
+      entry.updatedAt = Date.now();
+      setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+      persistPortfolio();
     }, 300);
     return () => clearTimeout(t);
-  }, [room, items, loaded]);
+  }, [room, items, loaded, persistPortfolio]);
 
   /* ----- coordinate helpers ----- */
 
@@ -633,6 +707,94 @@ export default function BanquetDesigner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
+  /* ----- portfolio operations ----- */
+
+  const switchLayout = useCallback(
+    (id: string) => {
+      const pf = portfolioRef.current;
+      if (!pf || id === activeIdRef.current) return;
+      flushSave();
+      const entry = pf.layouts.find((l) => l.id === id);
+      if (!entry) return;
+      pf.activeId = id;
+      setActiveId(id);
+      setRoom(entry.room);
+      setItemsRaw(entry.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+      setSelected([]);
+      setPast([]);
+      setFuture([]);
+      setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+      persistPortfolio();
+      setTimeout(fitZoom, 30);
+    },
+    [flushSave, persistPortfolio, fitZoom]
+  );
+
+  const addLayoutEntry = useCallback(
+    (entry: SavedLayout) => {
+      const pf = portfolioRef.current;
+      if (!pf) return;
+      flushSave();
+      pf.layouts.push(entry);
+      setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+      switchLayout(entry.id);
+    },
+    [flushSave, switchLayout]
+  );
+
+  const newLayout = useCallback(() => {
+    addLayoutEntry({
+      id: nextId(),
+      name: "New Event",
+      room: { name: "New Event", w: 60, h: 40 },
+      items: [],
+      updatedAt: Date.now(),
+    });
+  }, [addLayoutEntry]);
+
+  const duplicateLayout = useCallback(() => {
+    flushSave();
+    const pf = portfolioRef.current;
+    const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
+    if (!entry) return;
+    const name = `${entry.name} (copy)`;
+    addLayoutEntry({
+      id: nextId(),
+      name,
+      room: { ...entry.room, name },
+      items: entry.items.map((it) => ({ ...it })),
+      updatedAt: Date.now(),
+    });
+  }, [flushSave, addLayoutEntry]);
+
+  const deleteLayout = useCallback(() => {
+    const pf = portfolioRef.current;
+    const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
+    if (!pf || !entry) return;
+    if (!confirm(`Delete the event "${entry.name}" and its layout? This cannot be undone.`)) return;
+    pf.layouts = pf.layouts.filter((l) => l.id !== entry.id);
+    if (pf.layouts.length === 0) {
+      pf.layouts.push({
+        id: nextId(),
+        name: "New Event",
+        room: { name: "New Event", w: 60, h: 40 },
+        items: [],
+        updatedAt: Date.now(),
+      });
+    }
+    const next = pf.layouts[0];
+    pf.activeId = next.id;
+    setActiveId(next.id);
+    setRoom(next.room);
+    setItemsRaw(next.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+    setSelected([]);
+    setPast([]);
+    setFuture([]);
+    setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+    persistPortfolio();
+    setTimeout(fitZoom, 30);
+  }, [persistPortfolio, fitZoom]);
+
   /* ----- import / export ----- */
 
   const exportJSON = useCallback(() => {
@@ -645,21 +807,28 @@ export default function BanquetDesigner() {
     URL.revokeObjectURL(a.href);
   }, []);
 
+  // Importing a file adds it to the portfolio as a new event instead of
+  // overwriting whatever is open.
   const importJSON = useCallback(
     (file: File) => {
       file.text().then((text) => {
         try {
           const doc = JSON.parse(text) as LayoutDoc;
           if (!doc || !Array.isArray(doc.items) || !doc.room) throw new Error("bad file");
-          setRoom({ name: String(doc.room.name ?? ""), w: clamp(Number(doc.room.w) || 60, 10, 300), h: clamp(Number(doc.room.h) || 40, 10, 300) });
-          commit(doc.items.filter((it) => CATALOG_BY_TYPE[it.type]));
-          setSelected([]);
+          const name = String(doc.room.name ?? "").trim() || file.name.replace(/\.json$/i, "") || "Imported event";
+          addLayoutEntry({
+            id: nextId(),
+            name,
+            room: { name, w: clamp(Number(doc.room.w) || 60, 10, 300), h: clamp(Number(doc.room.h) || 40, 10, 300) },
+            items: doc.items.filter((it) => CATALOG_BY_TYPE[it.type]),
+            updatedAt: Date.now(),
+          });
         } catch {
           alert("Could not read that file — it doesn't look like a saved layout.");
         }
       });
     },
-    [commit]
+    [addLayoutEntry]
   );
 
   const exportPNG = useCallback(() => {
@@ -767,12 +936,37 @@ export default function BanquetDesigner() {
           <span className="hidden text-[11px] text-zinc-500 sm:inline dark:text-zinc-400">banquet &amp; event layouts</span>
         </div>
 
+        <select
+          className={`${input} max-w-44`}
+          value={activeId}
+          onChange={(e) => switchLayout(e.target.value)}
+          aria-label="Switch event layout"
+          title="Your saved event layouts"
+        >
+          {layoutList.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+        <button className={btn} onClick={newLayout} title="Start a new empty event layout">
+          + New
+        </button>
+        <button className={btn} onClick={duplicateLayout} title="Duplicate this event layout">
+          Copy
+        </button>
+        <button className={`${btn} !text-red-600 dark:!text-red-400`} onClick={deleteLayout} title="Delete this event layout">
+          Delete
+        </button>
+
+        <div className="mx-1 h-6 w-px bg-zinc-300 dark:bg-zinc-600" />
+
         <input
-          className={`${input} w-48`}
+          className={`${input} w-44`}
           value={room.name}
           onChange={(e) => setRoom((r) => ({ ...r, name: e.target.value }))}
-          placeholder="Room / event name"
-          aria-label="Room name"
+          placeholder="Event / room name"
+          aria-label="Event name"
         />
         <label className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
           W
