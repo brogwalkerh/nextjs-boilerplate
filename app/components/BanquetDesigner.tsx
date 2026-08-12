@@ -7,6 +7,7 @@ import {
   CATEGORIES,
   chairPositions,
   displayName,
+  LayoutComment,
   LayoutDoc,
   makeItem,
   nextId,
@@ -17,10 +18,12 @@ import {
   snapTo,
   totalSeats,
 } from "../lib/banquet";
+import { decodeShare, encodeShare } from "../lib/share";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const PORTFOLIO_KEY = "banquet-portfolio-v1";
 const LEGACY_KEY = "banquet-layout-v1"; // pre-portfolio single-layout storage
+const AUTHOR_KEY = "banquet-author-name";
 const M = CANVAS_MARGIN;
 
 interface SavedLayout {
@@ -28,6 +31,7 @@ interface SavedLayout {
   name: string;
   room: Room;
   items: PlacedItem[];
+  comments?: LayoutComment[];
   updatedAt: number;
 }
 
@@ -215,6 +219,7 @@ function PalettePreview({ type }: { type: string }) {
 
 type Marquee = { x0: number; y0: number; x1: number; y1: number; additive: boolean };
 type Ghost = { type: string; x: number; y: number };
+type ViewerMode = { mode: "client" | "team" };
 
 export default function BanquetDesigner() {
   const [room, setRoom] = useState<Room>({ name: "Grand Ballroom", w: 60, h: 40 });
@@ -230,11 +235,27 @@ export default function BanquetDesigner() {
   const [loaded, setLoaded] = useState(false);
   const [layoutList, setLayoutList] = useState<{ id: string; name: string }[]>([]);
   const [activeId, setActiveId] = useState("");
+  const [comments, setComments] = useState<LayoutComment[]>([]);
+  const [viewer, setViewer] = useState<ViewerMode | null>(null);
+  const [addingComment, setAddingComment] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareLinks, setShareLinks] = useState<{ client: string; team: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const portfolioRef = useRef<Portfolio | null>(null);
+  const viewerRef = useRef<ViewerMode | null>(null);
+  const commentsRef = useRef(comments);
+  const addingCommentRef = useRef(addingComment);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeIdRef = useRef(activeId);
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
+  useEffect(() => {
+    commentsRef.current = comments;
+  }, [comments]);
+  useEffect(() => {
+    addingCommentRef.current = addingComment;
+  }, [addingComment]);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -295,12 +316,16 @@ export default function BanquetDesigner() {
   }, []);
 
   // Write the editor's current room + items into the active portfolio entry.
+  // No-op while showing a shared link, so a shared snapshot never overwrites
+  // the viewer's own saved events.
   const flushSave = useCallback(() => {
+    if (viewerRef.current) return;
     const pf = portfolioRef.current;
     const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
     if (!pf || !entry) return;
     entry.room = roomRef.current;
     entry.items = itemsRef.current;
+    entry.comments = commentsRef.current;
     entry.name = roomRef.current.name.trim() || "Untitled event";
     entry.updatedAt = Date.now();
     persistPortfolio();
@@ -348,26 +373,66 @@ export default function BanquetDesigner() {
     portfolioRef.current = pf;
     setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
     setActiveId(active.id);
-    setRoom(active.room);
-    setItemsRaw(active.items.filter((it) => CATALOG_BY_TYPE[it.type]));
-    setLoaded(true);
+
+    const openActive = () => {
+      setRoom(active.room);
+      setItemsRaw(active.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+      setComments(active.comments ?? []);
+      setLoaded(true);
+    };
+
+    // Opening a share link while the app is already loaded only changes the
+    // hash (no reload), so force one to enter viewer mode.
+    const onHash = () => {
+      if (window.location.hash.startsWith("#share=")) window.location.reload();
+    };
+    window.addEventListener("hashchange", onHash);
+
+    // A #share= hash means this page was opened from a share link: show the
+    // shared snapshot in viewer mode instead of the user's own portfolio.
+    const hash = window.location.hash;
+    if (hash.startsWith("#share=")) {
+      decodeShare(hash.slice(7)).then((payload) => {
+        if (!payload) {
+          alert("This share link is invalid or incomplete — opening your own layouts instead.");
+          openActive();
+          return;
+        }
+        const mode: ViewerMode = { mode: payload.mode };
+        viewerRef.current = mode;
+        setViewer(mode);
+        const doc = payload.doc;
+        setRoom({
+          name: String(doc.room.name ?? ""),
+          w: clamp(Number(doc.room.w) || 60, 10, 300),
+          h: clamp(Number(doc.room.h) || 40, 10, 300),
+        });
+        setItemsRaw(doc.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+        setComments(Array.isArray(doc.comments) ? doc.comments : []);
+        setLoaded(true);
+      });
+    } else {
+      openActive();
+    }
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || viewer) return;
     const t = setTimeout(() => {
       const pf = portfolioRef.current;
       const entry = pf?.layouts.find((l) => l.id === activeIdRef.current);
       if (!pf || !entry) return;
       entry.room = room;
       entry.items = items;
+      entry.comments = comments;
       entry.name = room.name.trim() || "Untitled event";
       entry.updatedAt = Date.now();
       setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
       persistPortfolio();
     }, 300);
     return () => clearTimeout(t);
-  }, [room, items, loaded, persistPortfolio]);
+  }, [room, items, comments, loaded, viewer, persistPortfolio]);
 
   /* ----- coordinate helpers ----- */
 
@@ -403,6 +468,7 @@ export default function BanquetDesigner() {
   const onItemPointerDown = useCallback(
     (e: React.PointerEvent, id: string) => {
       if (e.button !== 0) return;
+      if (viewerRef.current) return; // read-only; let the event reach the canvas for comment pins
       e.stopPropagation();
       e.preventDefault();
 
@@ -452,6 +518,7 @@ export default function BanquetDesigner() {
   const onResizePointerDown = useCallback(
     (e: React.PointerEvent, id: string) => {
       if (e.button !== 0) return;
+      if (viewerRef.current) return;
       e.stopPropagation();
       e.preventDefault();
       const base = itemsRef.current;
@@ -485,9 +552,38 @@ export default function BanquetDesigner() {
     [clientToFeet, snapStep, beginDrag, commit]
   );
 
+  // In team-review mode a click on the plan drops a numbered comment pin.
+  const addPin = useCallback((x: number, y: number) => {
+    let author = "";
+    try {
+      author = localStorage.getItem(AUTHOR_KEY) || "";
+    } catch {
+      // ignore
+    }
+    if (!author) {
+      author = (window.prompt("Your name (shown next to your comments):") || "").trim();
+      if (!author) return;
+      try {
+        localStorage.setItem(AUTHOR_KEY, author);
+      } catch {
+        // ignore
+      }
+    }
+    const text = (window.prompt("Your comment for this spot:") || "").trim();
+    if (!text) return;
+    setComments((c) => [...c, { id: nextId(), x, y, author, text, createdAt: Date.now() }]);
+  }, []);
+
   const onCanvasPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
+      if (viewerRef.current) {
+        if (viewerRef.current.mode === "team" && addingCommentRef.current) {
+          const p = clientToFeet(e.clientX, e.clientY);
+          addPin(p.x, p.y);
+        }
+        return;
+      }
       e.preventDefault();
       const start = clientToFeet(e.clientX, e.clientY);
       const additive = e.shiftKey;
@@ -607,6 +703,7 @@ export default function BanquetDesigner() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (viewerRef.current) return; // shared links are read-only
       const t = e.target as HTMLElement;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       const mod = e.ctrlKey || e.metaKey;
@@ -720,6 +817,7 @@ export default function BanquetDesigner() {
       setActiveId(id);
       setRoom(entry.room);
       setItemsRaw(entry.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+      setComments(entry.comments ?? []);
       setSelected([]);
       setPast([]);
       setFuture([]);
@@ -763,6 +861,7 @@ export default function BanquetDesigner() {
       name,
       room: { ...entry.room, name },
       items: entry.items.map((it) => ({ ...it })),
+      comments: (entry.comments ?? []).map((c) => ({ ...c })),
       updatedAt: Date.now(),
     });
   }, [flushSave, addLayoutEntry]);
@@ -787,6 +886,7 @@ export default function BanquetDesigner() {
     setActiveId(next.id);
     setRoom(next.room);
     setItemsRaw(next.items.filter((it) => CATALOG_BY_TYPE[it.type]));
+    setComments(next.comments ?? []);
     setSelected([]);
     setPast([]);
     setFuture([]);
@@ -800,7 +900,7 @@ export default function BanquetDesigner() {
   // Save the active event as a portable .evlay file (JSON inside, so the
   // format stays open and future-proof). Colleagues load it via Open.
   const saveFile = useCallback(() => {
-    const doc: LayoutDoc = { room: roomRef.current, items: itemsRef.current };
+    const doc: LayoutDoc = { room: roomRef.current, items: itemsRef.current, comments: commentsRef.current };
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -825,6 +925,7 @@ export default function BanquetDesigner() {
             name,
             room: { name, w: clamp(Number(doc.room.w) || 60, 10, 300), h: clamp(Number(doc.room.h) || 40, 10, 300) },
             items: doc.items.filter((it) => CATALOG_BY_TYPE[it.type]),
+            comments: Array.isArray(doc.comments) ? doc.comments : [],
             updatedAt: Date.now(),
           });
         } catch {
@@ -932,6 +1033,106 @@ export default function BanquetDesigner() {
     pdf.save(`${name}.pdf`);
   }, [renderToCanvas]);
 
+  /* ----- sharing ----- */
+
+  const showNotice = useCallback((msg: string) => {
+    setNotice(msg);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 3000);
+  }, []);
+
+  const copyText = useCallback(
+    async (text: string, msg: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showNotice(msg);
+      } catch {
+        window.prompt("Copy this link:", text);
+      }
+    },
+    [showNotice]
+  );
+
+  // Generate both share links whenever the dialog opens. The client link is a
+  // clean snapshot without comments; the team link carries comments too.
+  useEffect(() => {
+    if (!shareOpen) return;
+    let cancelled = false;
+    (async () => {
+      const base = `${window.location.origin}${window.location.pathname}#share=`;
+      const clientDoc: LayoutDoc = { room: roomRef.current, items: itemsRef.current };
+      const teamDoc: LayoutDoc = { room: roomRef.current, items: itemsRef.current, comments: commentsRef.current };
+      const [client, team] = await Promise.all([
+        encodeShare({ v: 1, mode: "client", doc: clientDoc }),
+        encodeShare({ v: 1, mode: "team", doc: teamDoc }),
+      ]);
+      if (!cancelled) setShareLinks({ client: base + client, team: base + team });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [shareOpen]);
+
+  const mailtoShare = useCallback(
+    (mode: "client" | "team") => {
+      if (!shareLinks) return;
+      const name = roomRef.current.name.trim() || "Event layout";
+      const link = mode === "client" ? shareLinks.client : shareLinks.team;
+      const subject = mode === "client" ? `Floor plan: ${name}` : `Please review: ${name}`;
+      const body =
+        mode === "client"
+          ? `Hi,\n\nHere is the floor plan for ${name}:\n\n${link}\n`
+          : `Hi team,\n\nPlease review the layout for ${name}:\n\n${link}\n\nUse "Add comment" to drop pins on the plan, then "Email feedback" or "Copy feedback link" to send your notes back to me.\n`;
+      window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    },
+    [shareLinks]
+  );
+
+  // Feedback link = the same team link, but regenerated so it includes the
+  // reviewer's freshly added comment pins.
+  const makeFeedbackLink = useCallback(async () => {
+    const doc: LayoutDoc = { room: roomRef.current, items: itemsRef.current, comments: commentsRef.current };
+    return `${window.location.origin}${window.location.pathname}#share=` + (await encodeShare({ v: 1, mode: "team", doc }));
+  }, []);
+
+  const copyFeedbackLink = useCallback(async () => {
+    copyText(await makeFeedbackLink(), "Feedback link copied — send it back to the planner");
+  }, [makeFeedbackLink, copyText]);
+
+  const emailFeedback = useCallback(async () => {
+    const link = await makeFeedbackLink();
+    const name = roomRef.current.name.trim() || "the event layout";
+    window.location.href = `mailto:?subject=${encodeURIComponent(`Feedback on ${name}`)}&body=${encodeURIComponent(
+      `Hi,\n\nMy comments on ${name} are pinned in this link:\n\n${link}\n`
+    )}`;
+  }, [makeFeedbackLink]);
+
+  // From a shared link: keep a copy (including comment pins) in your own
+  // portfolio and switch back to the normal editor.
+  const saveSharedCopy = useCallback(() => {
+    const pf = portfolioRef.current;
+    if (!pf || !viewerRef.current) return;
+    const entry: SavedLayout = {
+      id: nextId(),
+      name: roomRef.current.name.trim() || "Shared event",
+      room: { ...roomRef.current },
+      items: itemsRef.current.map((it) => ({ ...it })),
+      comments: commentsRef.current.map((c) => ({ ...c })),
+      updatedAt: Date.now(),
+    };
+    pf.layouts.push(entry);
+    pf.activeId = entry.id;
+    viewerRef.current = null;
+    setViewer(null);
+    setAddingComment(false);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setActiveId(entry.id);
+    setLayoutList(pf.layouts.map((l) => ({ id: l.id, name: l.name })));
+    persistPortfolio();
+    showNotice(`Saved “${entry.name}” to your events`);
+    setTimeout(fitZoom, 30);
+  }, [persistPortfolio, fitZoom, showNotice]);
+
   const clearAll = useCallback(() => {
     if (itemsRef.current.length > 0 && !confirm("Clear the entire layout?")) return;
     commit([]);
@@ -995,6 +1196,52 @@ export default function BanquetDesigner() {
     <div className="flex h-dvh flex-col bg-zinc-100 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">
       {/* ---------- top toolbar ---------- */}
       <header className="flex flex-wrap items-center gap-2 border-b border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
+        {viewer ? (
+          <>
+            <span className="text-base font-bold tracking-tight">Salon Planner</span>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              {viewer.mode === "team" ? "shared for team review" : "shared floor plan"}
+            </span>
+            <span className="mx-1 truncate text-sm font-semibold">{room.name}</span>
+            <div className="mx-1 h-6 w-px bg-zinc-300 dark:bg-zinc-600" />
+            <button className={btn} onClick={() => setZoom((z) => clamp(z / 1.2, 0.2, 3))} title="Zoom out">
+              −
+            </button>
+            <span className="w-10 text-center text-xs tabular-nums">{Math.round(zoom * 100)}%</span>
+            <button className={btn} onClick={() => setZoom((z) => clamp(z * 1.2, 0.2, 3))} title="Zoom in">
+              +
+            </button>
+            <button className={btn} onClick={fitZoom}>
+              Fit
+            </button>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {viewer.mode === "team" && (
+                <>
+                  <button
+                    className={`${btn} ${addingComment ? "!bg-amber-100 dark:!bg-amber-900/50" : ""}`}
+                    onClick={() => setAddingComment((a) => !a)}
+                    title="Toggle comment mode, then click a spot on the plan"
+                  >
+                    {addingComment ? "Click the plan to comment…" : "💬 Add comment"}
+                  </button>
+                  <button className={btn} onClick={copyFeedbackLink} title="Copy a link containing your comment pins">
+                    Copy feedback link
+                  </button>
+                  <button className={btn} onClick={emailFeedback} title="Email your comment pins back to the planner">
+                    Email feedback
+                  </button>
+                </>
+              )}
+              <button className={btn} onClick={exportPDF}>
+                PDF
+              </button>
+              <button className={btn} onClick={saveSharedCopy} title="Keep this layout in your own Salon Planner">
+                Save a copy
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         <div className="mr-2 flex items-center gap-2">
           <span className="text-base font-bold tracking-tight">Salon Planner</span>
           <span className="hidden text-[11px] text-zinc-500 sm:inline dark:text-zinc-400">banquet &amp; event layouts</span>
@@ -1090,6 +1337,16 @@ export default function BanquetDesigner() {
         </button>
 
         <div className="ml-auto flex items-center gap-2">
+          <button
+            className={`${btn} !border-blue-700 !bg-blue-600 !text-white hover:!bg-blue-500`}
+            onClick={() => {
+              setShareLinks(null);
+              setShareOpen(true);
+            }}
+            title="Share this event with a client or the banquets team"
+          >
+            Share
+          </button>
           <button className={btn} onClick={loadSample}>
             Sample
           </button>
@@ -1120,6 +1377,8 @@ export default function BanquetDesigner() {
             }}
           />
         </div>
+          </>
+        )}
       </header>
 
       {/* ---------- stats strip ---------- */}
@@ -1134,13 +1393,23 @@ export default function BanquetDesigner() {
           <b className="text-zinc-800 dark:text-zinc-100">{seats}</b> seats
         </span>
         {seats > 0 && <span>{(sqft / seats).toFixed(1)} sq ft / guest</span>}
+        {comments.length > 0 && (
+          <span>
+            <b className="text-zinc-800 dark:text-zinc-100">{comments.length}</b> comments
+          </span>
+        )}
         <span className="ml-auto hidden text-[11px] text-zinc-400 md:inline">
-          Drag from palette · R rotate · Del delete · Ctrl+D duplicate · Ctrl+scroll zoom · Shift+click multi-select
+          {viewer
+            ? viewer.mode === "team"
+              ? "Click “Add comment”, then click a spot on the plan — send pins back with “Copy feedback link”"
+              : "View-only floor plan — zoom with Ctrl+scroll, download with PDF"
+            : "Drag from palette · R rotate · Del delete · Ctrl+D duplicate · Ctrl+scroll zoom · Shift+click multi-select"}
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* ---------- palette ---------- */}
+        {/* ---------- palette (hidden when viewing a shared link) ---------- */}
+        {!viewer && (
         <aside className="w-44 shrink-0 overflow-y-auto border-r border-zinc-300 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-800">
           {CATEGORIES.map((catName) => (
             <div key={catName} className="mb-3">
@@ -1161,6 +1430,7 @@ export default function BanquetDesigner() {
             </div>
           ))}
         </aside>
+        )}
 
         {/* ---------- canvas ---------- */}
         <div ref={scrollRef} className="relative min-w-0 flex-1 overflow-auto bg-zinc-200 dark:bg-zinc-900">
@@ -1171,7 +1441,7 @@ export default function BanquetDesigner() {
             viewBox={`${-M} ${-M} ${room.w + 2 * M} ${room.h + 2 * M}`}
             onPointerDown={onCanvasPointerDown}
             className="block touch-none select-none"
-            style={{ cursor: "default" }}
+            style={{ cursor: viewer?.mode === "team" && addingComment ? "crosshair" : "default" }}
           >
             {/* floor */}
             <rect x={-M} y={-M} width={room.w + 2 * M} height={room.h + 2 * M} fill="#efeadf" />
@@ -1251,6 +1521,24 @@ export default function BanquetDesigner() {
               );
             })}
 
+            {/* feedback comment pins (kept out of PNG/PDF exports) */}
+            {comments.map((c, i) => (
+              <g key={c.id} data-noexport transform={`translate(${c.x},${c.y})`}>
+                <circle r={1.3} fill="#dc2626" stroke="#ffffff" strokeWidth={0.18} />
+                <text
+                  y={0.45}
+                  textAnchor="middle"
+                  fontSize={1.4}
+                  fontWeight={700}
+                  fill="#ffffff"
+                  fontFamily="ui-sans-serif, system-ui, sans-serif"
+                >
+                  {i + 1}
+                </text>
+                <title>{`${c.author}: ${c.text}`}</title>
+              </g>
+            ))}
+
             {/* ghost while dragging from palette */}
             {ghost && (
               <g data-noexport transform={`translate(${ghost.x},${ghost.y})`} opacity={0.55} pointerEvents="none">
@@ -1277,7 +1565,37 @@ export default function BanquetDesigner() {
           </svg>
         </div>
 
-        {/* ---------- inspector ---------- */}
+        {/* ---------- inspector / comments panel ---------- */}
+        {viewer ? (
+          viewer.mode === "team" ? (
+            <aside className="w-56 shrink-0 overflow-y-auto border-l border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-800">
+              <p className="mb-1 text-sm font-semibold">Comments ({comments.length})</p>
+              <p className="mb-3 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                Click “Add comment”, then click a spot on the plan. When you&apos;re done, use “Copy feedback link” or
+                “Email feedback” to send your pins back to the planner.
+              </p>
+              <ol className="space-y-2">
+                {comments.map((c, i) => (
+                  <li key={c.id} className="rounded-md border border-zinc-200 p-2 text-xs dark:border-zinc-600">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold">
+                        #{i + 1} · {c.author}
+                      </span>
+                      <button
+                        className="text-red-600 hover:underline dark:text-red-400"
+                        onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}
+                        title="Remove this comment"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <p className="mt-1 text-zinc-600 dark:text-zinc-300">{c.text}</p>
+                  </li>
+                ))}
+              </ol>
+            </aside>
+          ) : null
+        ) : (
         <aside className="w-56 shrink-0 overflow-y-auto border-l border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-800">
           {selectedItems.length === 0 && (
             <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
@@ -1293,6 +1611,35 @@ export default function BanquetDesigner() {
                 <li>Ctrl+scroll — zoom</li>
                 <li>Drag on floor — marquee select</li>
               </ul>
+              {comments.length > 0 && (
+                <div className="mt-3 border-t border-zinc-200 pt-2 dark:border-zinc-600">
+                  <div className="mb-1 flex items-center justify-between">
+                    <p className="font-semibold text-zinc-700 dark:text-zinc-200">Team feedback ({comments.length})</p>
+                    <button className="text-red-600 hover:underline dark:text-red-400" onClick={() => setComments([])}>
+                      Clear all
+                    </button>
+                  </div>
+                  <ol className="space-y-2">
+                    {comments.map((c, i) => (
+                      <li key={c.id} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-600">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold">
+                            #{i + 1} · {c.author}
+                          </span>
+                          <button
+                            className="text-red-600 hover:underline dark:text-red-400"
+                            onClick={() => setComments((cs) => cs.filter((x) => x.id !== c.id))}
+                            title="Resolve / remove"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <p className="mt-1 text-zinc-600 dark:text-zinc-300">{c.text}</p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
             </div>
           )}
 
@@ -1418,7 +1765,85 @@ export default function BanquetDesigner() {
             </div>
           )}
         </aside>
+        )}
       </div>
+
+      {/* ---------- share dialog ---------- */}
+      {shareOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShareOpen(false)}>
+          <div
+            className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl dark:bg-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Share this event"
+          >
+            <h2 className="mb-1 text-base font-bold">Share “{room.name.trim() || "Untitled event"}”</h2>
+            <p className="mb-4 text-xs text-zinc-500 dark:text-zinc-400">
+              Links carry a snapshot of this layout — changes you make later aren&apos;t reflected in links you already
+              sent. Nothing is uploaded anywhere: the whole floor plan travels inside the link itself.
+            </p>
+
+            <div className="mb-4">
+              <p className="mb-1 text-sm font-semibold">Share with client — view only</p>
+              <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                A clean, read-only floor plan. Your client can zoom around and download the PDF — no editing tools, no
+                comments.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  className={`${input} min-w-0 flex-1`}
+                  value={shareLinks?.client ?? "Generating link…"}
+                  onFocus={(e) => e.target.select()}
+                  aria-label="Client share link"
+                />
+                <button className={btn} disabled={!shareLinks} onClick={() => copyText(shareLinks!.client, "Client link copied")}>
+                  Copy
+                </button>
+                <button className={btn} disabled={!shareLinks} onClick={() => mailtoShare("client")}>
+                  Email…
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-2">
+              <p className="mb-1 text-sm font-semibold">Share with team — review &amp; comment</p>
+              <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                The banquets team can drop numbered comment pins right on the plan, then send everything back to you with
+                “Copy feedback link” or “Email feedback”. Open their link and the pins appear on your screen.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  className={`${input} min-w-0 flex-1`}
+                  value={shareLinks?.team ?? "Generating link…"}
+                  onFocus={(e) => e.target.select()}
+                  aria-label="Team share link"
+                />
+                <button className={btn} disabled={!shareLinks} onClick={() => copyText(shareLinks!.team, "Team link copied")}>
+                  Copy
+                </button>
+                <button className={btn} disabled={!shareLinks} onClick={() => mailtoShare("team")}>
+                  Email…
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 text-right">
+              <button className={btn} onClick={() => setShareOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* transient notice toast */}
+      {notice && (
+        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md bg-zinc-900 px-3 py-2 text-xs text-white shadow-lg dark:bg-zinc-100 dark:text-zinc-900">
+          {notice}
+        </div>
+      )}
     </div>
   );
 }
