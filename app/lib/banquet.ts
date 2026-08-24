@@ -10,7 +10,7 @@ export type Shape = "round" | "rect";
 export interface CatalogEntry {
   type: string;
   name: string;
-  category: "Tables" | "Seating" | "Staging" | "Fixtures" | "Structure";
+  category: "Tables" | "Seating" | "Staging" | "Fixtures" | "Patio" | "Structure";
   shape: Shape;
   w: number; // feet (diameter for round)
   h: number;
@@ -88,7 +88,19 @@ export const CATALOG: CatalogEntry[] = [
   { type: "plant", name: "Plant", category: "Fixtures", shape: "round", w: 2, h: 2, seats: 0, seatArrangement: "none", fill: "#b5d4a7", stroke: "#4f7d3a", hideLabel: true },
   { type: "gift-table", name: "Gift Table", category: "Fixtures", shape: "rect", w: 6, h: 2.5, seats: 0, seatArrangement: "none", ...linen },
 
+  // ---- Patio & outdoor ----
+  { type: "patio-table", name: "Patio Table", category: "Patio", shape: "round", w: 3.5, h: 3.5, seats: 4, seatArrangement: "around", fill: "#c9a678", stroke: "#7d5f3e" },
+  { type: "umbrella", name: "Umbrella", category: "Patio", shape: "round", w: 8, h: 8, seats: 0, seatArrangement: "none", fill: "#8fc1b5", stroke: "#3f7f6f", hideLabel: true },
+  { type: "chaise", name: "Chaise Lounge", category: "Patio", shape: "rect", w: 6.5, h: 2.5, seats: 1, seatArrangement: "none", fill: "#a8cfe0", stroke: "#4a7fa0" },
+  { type: "patio-sofa", name: "Outdoor Sofa", category: "Patio", shape: "rect", w: 6, h: 2.8, seats: 3, seatArrangement: "none", fill: "#b8cdb0", stroke: "#5d7d52" },
+  { type: "fire-pit", name: "Fire Pit", category: "Patio", shape: "round", w: 3.5, h: 3.5, seats: 0, seatArrangement: "none", fill: "#d8c8b0", stroke: "#8a6f52", hideLabel: true },
+  { type: "patio-heater", name: "Patio Heater", category: "Patio", shape: "round", w: 2, h: 2, seats: 0, seatArrangement: "none", fill: "#e8e2d5", stroke: "#57534e", hideLabel: true },
+  { type: "planter", name: "Planter Box", category: "Patio", shape: "rect", w: 4, h: 1.5, seats: 0, seatArrangement: "none", fill: "#b5d4a7", stroke: "#4f7d3a" },
+
   // ---- Structure & annotation ----
+  { type: "arch", name: "Archway", category: "Structure", shape: "rect", w: 8, h: 2.5, seats: 0, seatArrangement: "none", fill: "#e7dbc8", stroke: "#8a7355" },
+  { type: "fireplace", name: "Fireplace", category: "Structure", shape: "rect", w: 6, h: 3, seats: 0, seatArrangement: "none", fill: "#e3b7a0", stroke: "#9c5a48" },
+  { type: "steps", name: "Steps", category: "Structure", shape: "rect", w: 6, h: 4, seats: 0, seatArrangement: "none", fill: "#ddd6c8", stroke: "#78716c" },
   { type: "hallway", name: "Hallway", category: "Structure", shape: "rect", w: 20, h: 6, seats: 0, seatArrangement: "none", resizable: true, fill: "#eceae2", stroke: "#78716c" },
   { type: "area", name: "Area / Zone", category: "Structure", shape: "rect", w: 12, h: 10, seats: 0, seatArrangement: "none", resizable: true, fill: "#dbe7f5", stroke: "#6b8cae" },
   { type: "label", name: "Text Label", category: "Structure", shape: "rect", w: 8, h: 2, seats: 0, seatArrangement: "none", resizable: true, fill: "none", stroke: "none" },
@@ -101,7 +113,7 @@ export const CATALOG_BY_TYPE: Record<string, CatalogEntry> = Object.fromEntries(
   CATALOG.map((c) => [c.type, c])
 );
 
-export const CATEGORIES = ["Tables", "Seating", "Staging", "Fixtures", "Structure"] as const;
+export const CATEGORIES = ["Tables", "Seating", "Staging", "Fixtures", "Patio", "Structure"] as const;
 
 let idCounter = 0;
 export function nextId(): string {
@@ -206,6 +218,10 @@ export function sampleLayout(): LayoutDoc {
   add("hallway", 66, 20, { w: 40, h: 6, rotation: 90, label: "Service Corridor" });
   add("area", -9, 10, { w: 14, h: 16, label: "Storage" });
   add("label", -9, 22, { label: "Back of house" });
+  add("area", -9, 31, { w: 14, h: 13, label: "Terrace" });
+  add("patio-table", -13, 28.5);
+  add("patio-table", -5, 28.5);
+  add("fire-pit", -9, 34);
   add("label", 30, -10.5, { w: 12, h: 2.5, label: "← To Lobby" });
   return { room, items };
 }

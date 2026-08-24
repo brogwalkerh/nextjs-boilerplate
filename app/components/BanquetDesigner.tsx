@@ -98,10 +98,64 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
       );
     }
   }
-  if (item.type === "lounge-sofa") {
+  if (item.type === "lounge-sofa" || item.type === "patio-sofa") {
     decorations.push(
       <rect key="back" x={-item.w / 2 + 0.15} y={-item.h / 2 + 0.15} width={item.w - 0.3} height={0.7} rx={0.3} fill={cat.stroke} opacity={0.35} />
     );
+  }
+  if (item.type === "chaise") {
+    // backrest slats at the head end
+    decorations.push(
+      <line key="s1" x1={-item.w / 2 + 0.5} y1={-item.h / 2 + 0.2} x2={-item.w / 2 + 0.5} y2={item.h / 2 - 0.2} stroke={cat.stroke} strokeWidth={0.1} />,
+      <line key="s2" x1={-item.w / 2 + 1} y1={-item.h / 2 + 0.2} x2={-item.w / 2 + 1} y2={item.h / 2 - 0.2} stroke={cat.stroke} strokeWidth={0.1} />
+    );
+  }
+  if (item.type === "fire-pit") {
+    decorations.push(
+      <circle key="ring" r={item.w * 0.3} fill="none" stroke={cat.stroke} strokeWidth={0.1} />,
+      <circle key="f1" cx={-item.w * 0.08} cy={0.05} r={item.w * 0.09} fill="#e8853d" />,
+      <circle key="f2" cx={item.w * 0.09} cy={-0.06} r={item.w * 0.07} fill="#d4552a" />,
+      <circle key="f3" cx={0} cy={item.w * 0.09} r={item.w * 0.06} fill="#f2b04a" />
+    );
+  }
+  if (item.type === "patio-heater") {
+    decorations.push(
+      <circle key="in" r={item.w * 0.28} fill="none" stroke={cat.stroke} strokeWidth={0.08} />,
+      <circle key="dot" r={item.w * 0.08} fill={cat.stroke} />
+    );
+  }
+  if (item.type === "planter") {
+    for (let i = 0; i < 3; i++) {
+      decorations.push(
+        <circle key={`p${i}`} cx={-item.w / 2 + (item.w * (i + 0.5)) / 3} cy={0} r={Math.min(item.h, item.w / 3) * 0.32} fill={cat.stroke} opacity={0.45} />
+      );
+    }
+  }
+  if (item.type === "umbrella" || item.type === "patio-table") {
+    // umbrella canopy seen from above: translucent circle with spokes
+    const r = item.type === "umbrella" ? item.w / 2 : item.w / 2 + 1.7;
+    const spokes: React.ReactNode[] = [];
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      spokes.push(
+        <line key={`sp${i}`} x1={0} y1={0} x2={Math.cos(a) * r} y2={Math.sin(a) * r} stroke="#3f7f6f" strokeWidth={0.07} opacity={0.5} />
+      );
+    }
+    decorations.push(
+      <g key="canopy" pointerEvents="none">
+        <circle r={r} fill="#8fc1b5" fillOpacity={item.type === "umbrella" ? 0 : 0.25} stroke="#3f7f6f" strokeWidth={0.1} opacity={0.9} />
+        {spokes}
+        <circle r={0.22} fill="#3f7f6f" />
+      </g>
+    );
+  }
+  if (item.type === "steps") {
+    const n = Math.max(2, Math.round(item.h / 1));
+    for (let i = 1; i < n; i++) {
+      decorations.push(
+        <line key={`t${i}`} x1={-item.w / 2} y1={-item.h / 2 + (item.h * i) / n} x2={item.w / 2} y2={-item.h / 2 + (item.h * i) / n} stroke={cat.stroke} strokeWidth={0.08} />
+      );
+    }
   }
   if (item.type === "plant") {
     decorations.push(
@@ -138,8 +192,30 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
       ) : item.type === "label" ? (
         // invisible hit target so the text can be clicked and dragged
         <rect x={-item.w / 2} y={-item.h / 2} width={item.w} height={item.h} fill="transparent" stroke="none" />
+      ) : item.type === "arch" ? (
+        // archway: two posts joined by an arc over a dashed opening
+        <>
+          <rect x={-item.w / 2} y={-item.h / 2} width={item.w} height={item.h} fill="transparent" stroke="none" />
+          <line x1={-item.w / 2} y1={item.h / 2 - 0.1} x2={item.w / 2} y2={item.h / 2 - 0.1} stroke={cat.stroke} strokeWidth={0.1} strokeDasharray="0.5 0.4" />
+          <path d={`M ${-item.w / 2} ${item.h / 2} A ${item.w / 2} ${item.h} 0 0 1 ${item.w / 2} ${item.h / 2}`} fill="none" stroke={cat.stroke} strokeWidth={0.28} />
+          <rect x={-item.w / 2 - 0.45} y={item.h / 2 - 0.9} width={0.9} height={0.9} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.1} />
+          <rect x={item.w / 2 - 0.45} y={item.h / 2 - 0.9} width={0.9} height={0.9} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.1} />
+        </>
+      ) : item.type === "fireplace" ? (
+        // fireplace: flat back with a rounded hearth front and a firebox
+        <>
+          <path
+            d={`M ${-item.w / 2} ${-item.h / 2} H ${item.w / 2} V 0 A ${item.w / 2} ${item.h / 2} 0 0 1 ${-item.w / 2} 0 Z`}
+            fill={cat.fill}
+            stroke={cat.stroke}
+            strokeWidth={0.12}
+          />
+          <path d={`M ${-item.w * 0.28} ${-item.h * 0.15} H ${item.w * 0.28} V 0 A ${item.w * 0.28} ${item.h * 0.3} 0 0 1 ${-item.w * 0.28} 0 Z`} fill="#6b3226" />
+          <circle cx={-item.w * 0.07} cy={item.h * 0.02} r={item.w * 0.06} fill="#e8853d" />
+          <circle cx={item.w * 0.07} cy={-item.h * 0.02} r={item.w * 0.05} fill="#f2b04a" />
+        </>
       ) : isRound ? (
-        <circle r={item.w / 2} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.12} />
+        <circle r={item.w / 2} fill={cat.fill} fillOpacity={item.type === "umbrella" ? 0.35 : undefined} stroke={cat.stroke} strokeWidth={0.12} />
       ) : (
         <rect
           x={-item.w / 2}
@@ -558,6 +634,7 @@ export default function BanquetDesigner() {
       const base = itemsRef.current;
       const item = base.find((it) => it.id === id);
       if (!item) return;
+      const isRound = CATALOG_BY_TYPE[item.type]?.shape === "round";
       // The corner opposite the drag handle stays fixed.
       const fixedLocal = rot(-item.w / 2, -item.h / 2, item.rotation);
       const fixed = { x: item.x + fixedLocal.x, y: item.y + fixedLocal.y };
@@ -568,8 +645,12 @@ export default function BanquetDesigner() {
         (ev) => {
           const p = clientToFeet(ev.clientX, ev.clientY);
           const local = rot(p.x - fixed.x, p.y - fixed.y, -item.rotation);
-          const w = clamp(snapTo(local.x, step), 1, 200);
-          const h = clamp(snapTo(local.y, step), 0.5, 200);
+          let w = clamp(snapTo(local.x, step), 1, 200);
+          let h = clamp(snapTo(local.y, step), 0.5, 200);
+          if (isRound) {
+            // round pieces scale their diameter uniformly
+            w = h = clamp(snapTo(Math.max(local.x, local.y), step), 1, 200);
+          }
           moved = true;
           const centerOff = rot(w / 2, h / 2, item.rotation);
           setItemsRaw(
@@ -1641,7 +1722,7 @@ export default function BanquetDesigner() {
                         strokeWidth={0.12}
                         strokeDasharray="0.5 0.35"
                       />
-                      {single?.id === it.id && singleCat?.resizable && (
+                      {single?.id === it.id && (
                         <rect
                           x={it.w / 2 - 0.5}
                           y={it.h / 2 - 0.5}
@@ -1856,7 +1937,23 @@ export default function BanquetDesigner() {
                 </label>
               )}
 
-              {singleCat.resizable && (
+              {singleCat.shape === "round" ? (
+                <label className="block text-xs text-zinc-600 dark:text-zinc-300">
+                  Diameter (ft)
+                  <input
+                    className={`${input} mt-1 w-24`}
+                    type="number"
+                    min={1}
+                    max={200}
+                    step={0.5}
+                    value={single.w}
+                    onChange={(e) => {
+                      const d = clamp(Number(e.target.value) || 1, 1, 200);
+                      updateSelected((it) => ({ ...it, w: d, h: d }));
+                    }}
+                  />
+                </label>
+              ) : (
                 <div className="flex gap-2 text-xs text-zinc-600 dark:text-zinc-300">
                   <label>
                     Width (ft)
