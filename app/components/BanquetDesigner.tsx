@@ -1,5 +1,6 @@
 "use client";
 
+import { PRESETS } from "../lib/presets";
 import {
   CANVAS_MARGIN,
   CATALOG,
@@ -14,18 +15,19 @@ import {
   PlacedItem,
   PPF,
   Room,
+  halfExtents,
   sampleLayout,
+  workspaceMargin,
   snapTo,
   totalSeats,
 } from "../lib/banquet";
 import { addLiveComment, createLive, deleteLiveComment, getLive, liveAvailable, LiveInfo, pushLive } from "../lib/live";
 import { decodeShare, encodeShare } from "../lib/share";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 
 const PORTFOLIO_KEY = "banquet-portfolio-v1";
 const LEGACY_KEY = "banquet-layout-v1"; // pre-portfolio single-layout storage
 const AUTHOR_KEY = "banquet-author-name";
-const M = CANVAS_MARGIN;
 
 interface SavedLayout {
   id: string;
@@ -178,7 +180,7 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
 
   // Free text labels rotate with the item (so text can run along a hallway);
   // furniture labels stay upright regardless of the item's rotation.
-  const keepTextRotation = item.type === "label" || item.type === "hallway" || item.type === "area";
+  const keepTextRotation = item.type === "label" || item.type === "hallway" || item.type === "area" || item.type === "floor";
 
   return (
     <g>
@@ -200,6 +202,39 @@ function ItemGlyph({ item, showText = true }: { item: PlacedItem; showText?: boo
           <path d={`M ${-item.w / 2} ${item.h / 2} A ${item.w / 2} ${item.h} 0 0 1 ${item.w / 2} ${item.h / 2}`} fill="none" stroke={cat.stroke} strokeWidth={0.28} />
           <rect x={-item.w / 2 - 0.45} y={item.h / 2 - 0.9} width={0.9} height={0.9} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.1} />
           <rect x={item.w / 2 - 0.45} y={item.h / 2 - 0.9} width={0.9} height={0.9} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.1} />
+        </>
+      ) : item.type === "door" ? (
+        // door: a gap cut through the wall plus the leaf swing(s) on the local -y side
+        (() => {
+          const leaves = item.w > 4 ? 2 : 1;
+          const L = item.w / leaves;
+          return (
+            <>
+              <rect x={-item.w / 2} y={-L} width={item.w} height={L + item.h / 2} fill="transparent" stroke="none" />
+              <rect x={-item.w / 2} y={-item.h / 2} width={item.w} height={item.h} fill={cat.fill} stroke="none" />
+              <line x1={-item.w / 2} y1={0} x2={-item.w / 2} y2={-L} stroke={cat.stroke} strokeWidth={0.16} />
+              <path d={`M ${-item.w / 2} ${-L} A ${L} ${L} 0 0 1 ${-item.w / 2 + L} 0`} fill="none" stroke={cat.stroke} strokeWidth={0.07} strokeDasharray="0.3 0.2" />
+              {leaves === 2 && (
+                <>
+                  <line x1={item.w / 2} y1={0} x2={item.w / 2} y2={-L} stroke={cat.stroke} strokeWidth={0.16} />
+                  <path d={`M ${item.w / 2} ${-L} A ${L} ${L} 0 0 0 ${item.w / 2 - L} 0`} fill="none" stroke={cat.stroke} strokeWidth={0.07} strokeDasharray="0.3 0.2" />
+                </>
+              )}
+            </>
+          );
+        })()
+      ) : item.type === "restroom" ? (
+        // restroom: walled room with a small WC sign above the label
+        <>
+          <rect x={-item.w / 2} y={-item.h / 2} width={item.w} height={item.h} fill={cat.fill} stroke={cat.stroke} strokeWidth={0.22} />
+          <g transform={`translate(0 ${-Math.min(item.h * 0.2, 3)})`}>
+            <rect x={-1.3} y={-1.3} width={2.6} height={2.6} rx={0.3} fill="#475569" />
+            <circle cx={-0.55} cy={-0.6} r={0.22} fill="#f8fafc" />
+            <line x1={-0.55} y1={-0.3} x2={-0.55} y2={0.85} stroke="#f8fafc" strokeWidth={0.34} strokeLinecap="round" />
+            <circle cx={0.55} cy={-0.6} r={0.22} fill="#f8fafc" />
+            <path d="M 0.55 -0.3 L 0.95 0.5 H 0.15 Z" fill="#f8fafc" />
+            <line x1={0.55} y1={0.4} x2={0.55} y2={0.85} stroke="#f8fafc" strokeWidth={0.3} strokeLinecap="round" />
+          </g>
         </>
       ) : item.type === "fireplace" ? (
         // fireplace: flat back with a rounded hearth front and a firebox
@@ -360,6 +395,13 @@ export default function BanquetDesigner() {
   useEffect(() => {
     roomRef.current = room;
   }, [room]);
+
+  // Workspace margin around the room; grows when items are placed far outside it.
+  const M = useMemo(() => workspaceMargin(room, items), [room, items]);
+  const mRef = useRef(CANVAS_MARGIN);
+  useEffect(() => {
+    mRef.current = M;
+  }, [M]);
 
   const snapStep = useCallback(() => (snap ? 0.5 : 0.05), [snap]);
 
@@ -549,7 +591,8 @@ export default function BanquetDesigner() {
   const clientToFeet = useCallback((clientX: number, clientY: number) => {
     const rect = svgRef.current!.getBoundingClientRect();
     const scale = PPF * zoomRef.current;
-    return { x: (clientX - rect.left) / scale - M, y: (clientY - rect.top) / scale - M };
+    const m = mRef.current;
+    return { x: (clientX - rect.left) / scale - m, y: (clientY - rect.top) / scale - m };
   }, []);
 
   const overCanvas = useCallback((clientX: number, clientY: number) => {
@@ -597,6 +640,7 @@ export default function BanquetDesigner() {
       let moved = false;
       const step = snapStep();
       const rm = roomRef.current;
+      const m = mRef.current;
 
       beginDrag(
         (ev) => {
@@ -611,8 +655,8 @@ export default function BanquetDesigner() {
               if (!o) return it;
               return {
                 ...it,
-                x: clamp(snapTo(o.x + dx, step), -M + 1, rm.w + M - 1),
-                y: clamp(snapTo(o.y + dy, step), -M + 1, rm.h + M - 1),
+                x: clamp(snapTo(o.x + dx, step), -m + 1, rm.w + m - 1),
+                y: clamp(snapTo(o.y + dy, step), -m + 1, rm.h + m - 1),
               };
             })
           );
@@ -751,10 +795,11 @@ export default function BanquetDesigner() {
     (type: string, x: number, y: number) => {
       const step = snapStep();
       const rm = roomRef.current;
+      const m = mRef.current;
       const it = makeItem(
         type,
-        clamp(snapTo(x, step), -M + 1, rm.w + M - 1),
-        clamp(snapTo(y, step), -M + 1, rm.h + M - 1)
+        clamp(snapTo(x, step), -m + 1, rm.w + m - 1),
+        clamp(snapTo(y, step), -m + 1, rm.h + m - 1)
       );
       commit([...itemsRef.current, it]);
       setSelected([it.id]);
@@ -877,16 +922,18 @@ export default function BanquetDesigner() {
     let maxX = rm.w;
     let maxY = rm.h + (rm.name ? 3.2 : 0); // leave space for the room name caption
     for (const it of itemsRef.current) {
-      const r = Math.max(it.w, it.h) / 2 + 2.2;
-      minX = Math.min(minX, it.x - r);
-      minY = Math.min(minY, it.y - r);
-      maxX = Math.max(maxX, it.x + r);
-      maxY = Math.max(maxY, it.y + r);
+      const { hw, hh } = halfExtents(it);
+      const pad = 2.2; // room for chairs and labels around the item
+      minX = Math.min(minX, it.x - hw - pad);
+      minY = Math.min(minY, it.y - hh - pad);
+      maxX = Math.max(maxX, it.x + hw + pad);
+      maxY = Math.max(maxY, it.y + hh + pad);
     }
-    minX = Math.max(minX - 1.5, -M);
-    minY = Math.max(minY - 1.5, -M);
-    maxX = Math.min(maxX + 1.5, rm.w + M);
-    maxY = Math.min(maxY + 1.5, rm.h + M);
+    const m = mRef.current;
+    minX = Math.max(minX - 1.5, -m);
+    minY = Math.max(minY - 1.5, -m);
+    maxX = Math.min(maxX + 1.5, rm.w + m);
+    maxY = Math.min(maxY + 1.5, rm.h + m);
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }, []);
 
@@ -901,8 +948,9 @@ export default function BanquetDesigner() {
     );
     setZoom(z);
     requestAnimationFrame(() => {
-      el.scrollLeft = (bb.x + M) * PPF * z - (el.clientWidth - bb.w * PPF * z) / 2;
-      el.scrollTop = (bb.y + M) * PPF * z - (el.clientHeight - bb.h * PPF * z) / 2;
+      const m = mRef.current;
+      el.scrollLeft = (bb.x + m) * PPF * z - (el.clientWidth - bb.w * PPF * z) / 2;
+      el.scrollTop = (bb.y + m) * PPF * z - (el.clientHeight - bb.h * PPF * z) / 2;
     });
   }, [contentBBox]);
 
@@ -917,8 +965,9 @@ export default function BanquetDesigner() {
       setZoom((z) => {
         const nz = clamp(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 0.2, 3);
         requestAnimationFrame(() => {
-          el.scrollLeft = (pt.x + M) * PPF * nz - (e.clientX - elRect.left);
-          el.scrollTop = (pt.y + M) * PPF * nz - (e.clientY - elRect.top);
+          const m = mRef.current;
+          el.scrollLeft = (pt.x + m) * PPF * nz - (e.clientX - elRect.left);
+          el.scrollTop = (pt.y + m) * PPF * nz - (e.clientY - elRect.top);
         });
         return nz;
       });
@@ -1342,13 +1391,20 @@ export default function BanquetDesigner() {
     setSelected([]);
   }, [commit]);
 
-  const loadSample = useCallback(() => {
-    if (itemsRef.current.length > 0 && !confirm("Replace the current layout with the sample?")) return;
-    const s = sampleLayout();
-    setRoom(s.room);
-    commit(s.items);
-    setSelected([]);
-  }, [commit]);
+  // "Set layout": start the current event from one of the venue floor plans or the sample.
+  const loadPreset = useCallback(
+    (id: string) => {
+      const preset = PRESETS.find((p) => p.id === id);
+      if (!preset) return;
+      if (itemsRef.current.length > 0 && !confirm(`Replace the current layout with “${preset.name}”?`)) return;
+      const doc = preset.build();
+      setRoom(doc.room);
+      commit(doc.items);
+      setSelected([]);
+      setTimeout(fitZoom, 30);
+    },
+    [commit, fitZoom]
+  );
 
   /* ----- derived ----- */
 
@@ -1568,9 +1624,26 @@ export default function BanquetDesigner() {
           >
             Share
           </button>
-          <button className={btn} onClick={loadSample}>
-            Sample
-          </button>
+          <select
+            className={`${btn} max-w-40 cursor-pointer`}
+            value=""
+            onChange={(e) => {
+              const id = e.target.value;
+              e.target.value = "";
+              if (id) loadPreset(id);
+            }}
+            aria-label="Set layout from a floor plan"
+            title="Start this event from one of the venue's floor plans, or the sample"
+          >
+            <option value="" disabled>
+              Set layout…
+            </option>
+            {PRESETS.map((p) => (
+              <option key={p.id} value={p.id} title={p.description}>
+                {p.name}
+              </option>
+            ))}
+          </select>
           <button className={btn} onClick={clearAll}>
             Clear
           </button>

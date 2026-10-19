@@ -107,6 +107,11 @@ export const CATALOG: CatalogEntry[] = [
   { type: "airwall", name: "Airwall", category: "Structure", shape: "rect", w: 12, h: 0.6, seats: 0, seatArrangement: "none", resizable: true, fill: "#9ca3af", stroke: "#4b5563" },
   { type: "entrance", name: "Entrance", category: "Structure", shape: "rect", w: 6, h: 1, seats: 0, seatArrangement: "none", fill: "#fcd9a8", stroke: "#c08a2e" },
   { type: "pillar", name: "Pillar", category: "Structure", shape: "round", w: 2.5, h: 2.5, seats: 0, seatArrangement: "none", fill: "#d6d3d1", stroke: "#57534e", hideLabel: true },
+  { type: "wall", name: "Wall", category: "Structure", shape: "rect", w: 12, h: 0.6, seats: 0, seatArrangement: "none", resizable: true, fill: "#57534e", stroke: "#44403c", hideLabel: true },
+  { type: "door", name: "Door", category: "Structure", shape: "rect", w: 6, h: 1, seats: 0, seatArrangement: "none", resizable: true, fill: "#f7f3e8", stroke: "#57534e", hideLabel: true },
+  { type: "floor", name: "Open Floor", category: "Structure", shape: "rect", w: 12, h: 10, seats: 0, seatArrangement: "none", resizable: true, fill: "#eceae2", stroke: "none", hideLabel: true },
+  { type: "restroom", name: "Restroom", category: "Structure", shape: "rect", w: 12, h: 16, seats: 0, seatArrangement: "none", resizable: true, fill: "#e9eef3", stroke: "#64748b" },
+  { type: "console", name: "Console Table", category: "Fixtures", shape: "rect", w: 5, h: 1, seats: 0, seatArrangement: "none", resizable: true, fill: "#57534e", stroke: "#292524", hideLabel: true },
 ];
 
 export const CATALOG_BY_TYPE: Record<string, CatalogEntry> = Object.fromEntries(
@@ -180,6 +185,26 @@ export function displayName(item: PlacedItem): string {
   if (item.label) return item.label;
   const cat = CATALOG_BY_TYPE[item.type];
   return cat ? cat.name : item.type;
+}
+
+// Half width/height of the axis-aligned box around an item once rotated.
+export function halfExtents(item: PlacedItem): { hw: number; hh: number } {
+  const a = (item.rotation * Math.PI) / 180;
+  const c = Math.abs(Math.cos(a));
+  const s = Math.abs(Math.sin(a));
+  return { hw: (item.w / 2) * c + (item.h / 2) * s, hh: (item.w / 2) * s + (item.h / 2) * c };
+}
+
+// How much workspace (in feet) to show on every side of the room. Starts at
+// CANVAS_MARGIN and grows, in 10 ft steps, so that nothing placed outside the
+// room (a foyer, restrooms, a corridor) ever falls off the edge of the canvas.
+export function workspaceMargin(room: Room, items: PlacedItem[]): number {
+  let need = 0;
+  for (const it of items) {
+    const { hw, hh } = halfExtents(it);
+    need = Math.max(need, hw - it.x, hh - it.y, it.x + hw - room.w, it.y + hh - room.h);
+  }
+  return Math.max(CANVAS_MARGIN, Math.ceil((need + 4) / 10) * 10);
 }
 
 export function totalSeats(items: PlacedItem[]): number {
